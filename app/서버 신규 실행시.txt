@@ -1,0 +1,5 @@
+cd C:\leonardo\leonardo-prompt
+rmdir /s /q .next
+npm run dev
+
+http://localhost:3000/
