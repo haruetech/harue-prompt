@@ -1,1180 +1,799 @@
-"use client";
+'use client'
 
-import React, { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
+import { createClient } from '@supabase/supabase-js'
 
-/* =========================
-   타입
-========================= */
-type Group = "apparel" | "shoes";
-type Shot = "thumbnail" | "detail" | "lookbook";
-
-type ApparelItem = "outer" | "tshirt" | "pants" | "skirt" | "dress" | "knit";
-type ShoeItem =
-  | "sneakers"
-  | "loafers"
-  | "flats"
-  | "pumps"
-  | "sandals"
-  | "mules"
-  | "slippers"
-  | "boots"
-  | "dress_shoes";
-
-type ItemKey = `apparel:${ApparelItem}` | `shoes:${ShoeItem}`;
-
-type BgCategory = "studio" | "cafe" | "city";
-type BgOption =
-  | "studio_white"
-  | "studio_gray"
-  | "studio_beige"
-  | "studio_gradient_paper"
-  | "cafe_minimal"
-  | "cafe_wood"
-  | "cafe_modern"
-  | "city_minimal"
-  | "city_newyork"
-  | "city_lookbook_set"
-  | "city_winter_mood";
-
-/* =========================
-   라벨
-========================= */
-const GROUP_LABEL: Record<Group, string> = { apparel: "의류", shoes: "신발" };
-
-const SHOT_LABEL: Record<Shot, string> = {
-  thumbnail: "썸네일",
-  detail: "세부 사항",
-  lookbook: "룩북",
-};
-
-const APPAREL_LABEL: Record<ApparelItem, string> = {
-  outer: "아우터(코트/자켓/패딩)",
-  tshirt: "티셔츠",
-  pants: "팬츠(슬랙스/데님)",
-  skirt: "스커트",
-  dress: "원피스",
-  knit: "니트",
-};
-
-const SHOE_LABEL: Record<ShoeItem, string> = {
-  sneakers: "스니커즈",
-  loafers: "로퍼",
-  flats: "플랫슈즈",
-  pumps: "펌프스",
-  sandals: "샌들",
-  mules: "뮬",
-  slippers: "슬리퍼",
-  boots: "부츠",
-  dress_shoes: "구두",
-};
-
-const BG_CATEGORY_LABEL: Record<BgCategory, string> = {
-  studio: "스튜디오",
-  cafe: "카페",
-  city: "도시",
-};
-
-const BG_OPTION_LABEL: Record<BgOption, string> = {
-  // studio
-  studio_white: "화이트",
-  studio_gray: "그레이",
-  studio_beige: "베이지",
-  studio_gradient_paper: "그라데이션 페이퍼",
-  // cafe
-  cafe_minimal: "미니멀카페",
-  cafe_wood: "우드카페",
-  cafe_modern: "모던카페",
-  // city
-  city_minimal: "미니멀도시",
-  city_newyork: "뉴욕도시",
-  city_lookbook_set: "룩북세트(감성배경)",
-  city_winter_mood: "겨울무드(차분한배경)",
-};
-
-/* =========================
-   전신 컷 고정 (★ 얼굴/신발 크롭 방지 핵심)
-   - detail(클로즈업)에서는 자동 제외
-========================= */
-const FULL_BODY_LOCK =
-  "full body fashion photography, head to toe visible, entire body fully in frame, face fully visible, shoes fully visible, centered composition, symmetrical framing, no cropping, no cut off head, no cut off face, no cut off feet, no cut off shoes";
-
-/* =========================
-   품질/네거티브(공통)
-========================= */
-const COMMON_QUALITY =
-  "photorealistic, ultra high resolution, commercial fashion photography, natural lighting, realistic texture, accurate proportions, e-commerce ready, sharp focus, premium mood";
-
-const COMMON_NEGATIVE =
-  "cartoon, illustration, anime, blurry, lowres, overexposed, oversaturated, deformed, distorted, extra limbs, extra fingers, wrong anatomy, warped product, melted product, duplicated product, watermark, text, logo, brand name, letters, numbers, jpeg artifacts, bad perspective, wrong scale";
-
-const BLUR_CONTROL_NEGATIVE =
-  "busy background, cluttered background, sharp background, background in focus, distracting background, messy scene, overcrowded";
-
-const CROP_BLOCK_NEGATIVE =
-  "cropped, out of frame, partial body, half body, close-up, cut off head, cut off face, cut off feet, cut off shoes, missing head, missing feet";
-
-/* =========================
-   ✅ 컴팩트(핵심) 모드용 최소 프롬프트
-   - “광범위하게 길어지는” 원인을 강하게 줄임
-========================= */
-const BODYLOCK_SHORT = "full body, head to toe, no cropping";
-const QUALITY_SHORT = "photorealistic, natural lighting, sharp focus";
-const NEGATIVE_SHORT =
-  "cropped, out of frame, cut off head, cut off feet, blurry, lowres, deformed, text, logo, watermark";
-
-/* =========================
-   배경 프롬프트 (모두 블러 유지)
-========================= */
-const BG_OPTION_PROMPT: Record<BgOption, string> = {
-  // studio
-  studio_white: "clean white background, shallow depth of field",
-  studio_gray: "neutral studio background, light gray backdrop, shallow depth of field",
-  studio_beige: "warm beige studio background, shallow depth of field",
-  studio_gradient_paper: "soft gradient paper backdrop, studio lighting, shallow depth of field",
-
-  // cafe
-  cafe_minimal:
-    "minimal cafe background, clean interior, soft daylight, shallow depth of field, bokeh",
-  cafe_wood:
-    "cozy cafe background, warm ambient lighting, wooden interior, shallow depth of field, bokeh",
-  cafe_modern:
-    "modern cafe background, dark tones, glossy surfaces, warm accent lights, shallow depth of field, bokeh",
-
-  // city
-  city_minimal:
-    "minimal city street background, neutral tones, shallow depth of field, bokeh",
-  city_newyork:
-    "New York city street background, urban vibe, shallow depth of field, bokeh, cinematic mood",
-  city_lookbook_set:
-    "editorial lookbook set background, minimal props, shallow depth of field, bokeh",
-  city_winter_mood:
-    "winter mood background, dark neutral tones, soft light, shallow depth of field, bokeh",
-};
-
-const BG_OPTIONS_BY_CATEGORY: Record<BgCategory, BgOption[]> = {
-  studio: ["studio_white", "studio_gray", "studio_beige", "studio_gradient_paper"],
-  cafe: ["cafe_minimal", "cafe_wood", "cafe_modern"],
-  city: ["city_minimal", "city_newyork", "city_lookbook_set", "city_winter_mood"],
-};
-
-function recommendedBgByShot(shot: Shot): { cat: BgCategory; opt: BgOption } {
-  if (shot === "detail") return { cat: "studio", opt: "studio_white" };
-  if (shot === "thumbnail") return { cat: "studio", opt: "studio_gray" };
-  return { cat: "city", opt: "city_lookbook_set" };
+// ── 타입 ──────────────────────────────────────────────────────
+type ProductRow = {
+  id?: string
+  product_name: string
+  item_code: string
+  brand: string
+  price: number | string
+  main_image: string
+  sub_images: string[]
+  html: string
+  created_at?: string
 }
 
-/* =========================
-   아이템 프리셋
-========================= */
-type Preset = { base: string; shot: Record<Shot, string> };
+type EditableProduct = {
+  id?: string
+  product_name: string
+  item_code: string
+  brand: string
+  price: string
+  main_image: string
+  sub_images_text: string
+  html: string
+}
 
-const PRESETS: Record<ItemKey, Preset> = {
-  "apparel:outer": {
-    base:
-      "women outerwear, premium coat or jacket, structured silhouette, accurate fit and drape",
-    shot: {
-      thumbnail: "full body model, straight standing pose, outfit centered, soft shadow",
-      detail: "close-up, focus on fabric weave, stitching, buttons or zipper, collar detail",
-      lookbook: "editorial lookbook, cinematic lighting, minimal set, elegant styling, luxury brand atmosphere",
-    },
-  },
-  "apparel:tshirt": {
-    base:
-      "women t-shirt, casual daily wear, clean neckline, natural fit, realistic cotton fabric texture",
-    shot: {
-      thumbnail: "full body model, straight standing pose, clean framing, soft shadow",
-      detail: "close-up, focus on neckline rib, sleeve hem, stitching, fabric texture",
-      lookbook: "casual lookbook, natural daylight, minimal styling, lifestyle mood, premium casual",
-    },
-  },
-  "apparel:pants": {
-    base:
-      "women pants, slacks or denim, correct proportions, realistic fabric folds, accurate waistband and hem",
-    shot: {
-      thumbnail: "full body model, legs visible, natural standing pose, silhouette clear",
-      detail: "close-up, focus on waistband, zipper, pockets, stitching, hem, fabric texture",
-      lookbook: "editorial lookbook, walking pose, natural motion, luxury mood, cinematic light",
-    },
-  },
-  "apparel:skirt": {
-    base:
-      "women skirt, midi or long length, elegant drape, accurate waistline, premium fashion mood",
-    shot: {
-      thumbnail: "full body model, skirt length visible, centered composition, soft shadow",
-      detail: "close-up, focus on pleats, waistband, zipper, lining detail, fabric texture",
-      lookbook: "editorial lookbook, gentle motion, airy mood, premium styling, cinematic lighting",
-    },
-  },
-  "apparel:dress": {
-    base:
-      "women dress, elegant silhouette, realistic fabric texture, high-end fashion photography, accurate proportions",
-    shot: {
-      thumbnail: "full body model, dress fully visible, centered composition, soft shadow",
-      detail: "close-up, focus on neckline, waist seam, zipper or buttons, fabric texture",
-      lookbook: "luxury lookbook, cinematic lighting, refined pose, minimal props, editorial mood",
-    },
-  },
-  "apparel:knit": {
-    base:
-      "women knitwear, soft texture, realistic knit pattern, premium cozy mood, accurate fit",
-    shot: {
-      thumbnail: "full body model, knit texture visible, soft studio light",
-      detail: "macro close-up, focus on knit weave, rib cuffs, button detail if cardigan",
-      lookbook: "editorial cozy lookbook, soft cinematic light, minimal set, premium styling",
-    },
-  },
-  "shoes:sneakers": {
-    base:
-      "women sneakers, realistic materials, accurate shoe proportions, premium product photography",
-    shot: {
-      thumbnail: "female model wearing sneakers, full body or 3/4 body, natural standing pose, focus on shoes",
-      detail: "close-up, focus on toe box, laces, stitching, outsole texture, sharp details",
-      lookbook: "editorial lookbook, walking motion, modern minimal styling, cinematic lighting, focus on footwear",
-    },
-  },
-  "shoes:loafers": {
-    base:
-      "women loafers, premium leather look, clean silhouette, accurate shoe shape, luxury mood",
-    shot: {
-      thumbnail: "female model wearing loafers, full body framing, ankle visible, focus on shoes",
-      detail: "close-up, focus on leather grain, stitching, vamp detail, outsole edge",
-      lookbook: "high-end lookbook, refined styling, minimal set, cinematic lighting, focus on loafers",
-    },
-  },
-  "shoes:flats": {
-    base:
-      "women flats, elegant minimal design, accurate toe shape, realistic materials, premium product photo",
-    shot: {
-      thumbnail: "female model wearing flats, full body framing, natural standing pose, focus on shoes",
-      detail: "close-up, focus on toe shape, piping, insole texture, outsole",
-      lookbook: "editorial lookbook, graceful pose, minimal styling, cinematic light, focus on flats",
-    },
-  },
-  "shoes:pumps": {
-    base:
-      "women pumps, classic silhouette, accurate heel shape and height, premium leather texture, luxury mood",
-    shot: {
-      thumbnail: "female model wearing pumps, full body framing, elegant stance, focus on heel and toe",
-      detail: "close-up, focus on heel construction, insole, stitching, toe box",
-      lookbook: "luxury editorial lookbook, refined pose, minimal set, cinematic lighting, focus on pumps",
-    },
-  },
-  "shoes:sandals": {
-    base:
-      "women sandals, clean straps, accurate foot fit, realistic materials, summer premium mood",
-    shot: {
-      thumbnail: "female model wearing sandals, full body framing, relaxed pose, focus on straps and sole",
-      detail: "close-up, focus on strap texture, buckle, stitching, outsole",
-      lookbook: "summer lookbook, airy mood, natural lighting, minimal styling, focus on sandals",
-    },
-  },
-  "shoes:mules": {
-    base:
-      "women mules, slip-on design, accurate toe shape, realistic materials, premium product photography",
-    shot: {
-      thumbnail: "female model wearing mules, full body framing, casual standing pose, focus on shoes",
-      detail: "close-up, focus on upper shape, insole, stitching, outsole",
-      lookbook: "editorial lookbook, minimal set, relaxed luxury mood, cinematic lighting, focus on mules",
-    },
-  },
-  "shoes:slippers": {
-    base:
-      "women slippers, daily comfort, soft materials, accurate shape, e-commerce product photo",
-    shot: {
-      thumbnail: "female model wearing slippers, full body framing, indoor cozy mood, focus on shoes",
-      detail: "close-up, focus on upper material, stitching, footbed, outsole",
-      lookbook: "cozy lifestyle lookbook, soft daylight, minimal set, premium comfort mood, focus on slippers",
-    },
-  },
-  "shoes:boots": {
-    base:
-      "women boots, ankle or knee-high, accurate shaft line and calf fit, realistic leather texture, premium winter mood",
-    shot: {
-      thumbnail: "female model wearing boots, full body framing, focus on boots silhouette",
-      detail: "close-up, focus on zipper, stitching, leather grain, outsole",
-      lookbook: "winter lookbook, cinematic lighting, luxury styling, minimal set, focus on boots",
-    },
-  },
-  "shoes:dress_shoes": {
-    base:
-      "women dress shoes, formal classic design, accurate proportions, premium leather texture, luxury mood",
-    shot: {
-      thumbnail: "female model wearing dress shoes, full body framing, clean formal styling, focus on silhouette",
-      detail: "close-up, focus on toe shape, stitching, leather grain, heel/outsole construction",
-      lookbook: "formal editorial lookbook, refined pose, minimal set, cinematic lighting, focus on dress shoes",
-    },
-  },
-};
+type ApprovalRow = {
+  id: string
+  user_id: string
+  email: string
+  approved: boolean
+  created_at: string
+}
 
-/* =========================
-   배경/샷별 Negative 보강
-========================= */
-function negativeBoostByBg(opt: BgOption): string[] {
-  const antiText = [
-    "sign",
-    "signage",
-    "billboard",
-    "poster",
-    "menu",
-    "menu board",
-    "readable text",
-    "typography",
-  ];
+type Tab = 'products' | 'approvals'
 
-  if (opt.startsWith("cafe_")) {
-    return [
-      ...antiText,
-      "coffee cup text",
-      "logo on cup",
-      "cafe logo",
-      "price tag",
-      "neon sign",
-      "table clutter",
-      "crowd",
-      "people in background",
-    ];
+// ── 상수 ──────────────────────────────────────────────────────
+const BRAND_OPTIONS = ['MINIMUM', 'HARUE', 'TRENDON']
+const ADMIN_EMAIL = process.env.NEXT_PUBLIC_ADMIN_EMAIL || 'haruetech@gmail.com'
+
+const MENU_ITEMS = [
+  { name: '상품관리', desc: '등록 상품 조회 / 수정', tab: 'products' as Tab },
+  { name: '승인관리', desc: '가입 신청 승인 / 취소', tab: 'approvals' as Tab },
+  { name: '상세페이지 제작', desc: '품번 생성 + HTML 제작', route: '/detail' },
+  { name: '등록데이터 관리', desc: '업로드 전 데이터 정리' },
+  { name: '사방넷 등록', desc: '엑셀 다운로드 / 업로드' },
+  { name: '카페24 등록', desc: '카페24 상품 등록' },
+  { name: '주문관리', desc: '주문 수집 / 처리' },
+  { name: '업체관리', desc: '공급사 / 거래처 관리' },
+  { name: 'CS관리', desc: '고객 응대 / 문의 관리' },
+]
+
+// ── Supabase ──────────────────────────────────────────────────
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+const supabase =
+  supabaseUrl && supabaseAnonKey
+    ? createClient(supabaseUrl, supabaseAnonKey)
+    : null
+
+// ── 헬퍼 ──────────────────────────────────────────────────────
+function normalizeProduct(row: any): ProductRow {
+  return {
+    id: row?.id ?? '',
+    product_name: row?.product_name ?? '',
+    item_code: row?.item_code ?? '',
+    brand: row?.brand ?? '',
+    price: row?.price ?? '',
+    main_image: row?.main_image ?? '',
+    sub_images: Array.isArray(row?.sub_images)
+      ? row.sub_images.filter(Boolean)
+      : typeof row?.sub_images === 'string'
+        ? row.sub_images.split('\n').map((v: string) => v.trim()).filter(Boolean)
+        : [],
+    html: row?.html ?? '',
+    created_at: row?.created_at ?? '',
+  }
+}
+
+function toEditable(product: ProductRow | null): EditableProduct {
+  return {
+    id: product?.id ?? '',
+    product_name: product?.product_name ?? '',
+    item_code: product?.item_code ?? '',
+    brand: product?.brand ?? 'MINIMUM',
+    price: String(product?.price ?? ''),
+    main_image: product?.main_image ?? '',
+    sub_images_text: (product?.sub_images ?? []).join('\n'),
+    html: product?.html ?? '',
+  }
+}
+
+function emptyEditable(): EditableProduct {
+  return { id: '', product_name: '', item_code: '', brand: 'MINIMUM', price: '', main_image: '', sub_images_text: '', html: '' }
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;')
+}
+
+function buildAutoHtml(form: EditableProduct) {
+  const subImages = form.sub_images_text.split('\n').map((v) => v.trim()).filter(Boolean)
+  const gallery = subImages.length
+    ? subImages.map((img) => `<div style="margin-bottom:12px;"><img src="${img}" alt="detail" style="display:block;width:100%;max-width:1100px;margin:0 auto;border:0;" /></div>`).join('')
+    : ''
+  return `
+<div style="max-width:1100px;margin:0 auto;background:#ffffff;color:#111111;font-family:Arial,'Apple SD Gothic Neo','Noto Sans KR',sans-serif;">
+  <div style="padding:24px 20px 14px 20px;border-bottom:1px solid #e5e5e5;">
+    <div style="font-size:13px;color:#666666;">${escapeHtml(form.brand || '-')}</div>
+    <div style="margin-top:8px;font-size:30px;font-weight:700;">${escapeHtml(form.product_name || '상품명')}</div>
+    <div style="margin-top:10px;font-size:14px;color:#777777;">품번 : ${escapeHtml(form.item_code || '-')}</div>
+    <div style="margin-top:6px;font-size:18px;font-weight:700;">${escapeHtml(form.price || '0')}원</div>
+  </div>
+  ${form.main_image ? `<div style="padding:24px 20px 10px;"><img src="${form.main_image}" alt="main" style="display:block;width:100%;max-width:1100px;margin:0 auto;border:0;" /></div>` : ''}
+  ${gallery ? `<div style="padding:10px 20px 24px;">${gallery}</div>` : ''}
+  <div style="padding:28px 20px;border-top:1px solid #f0f0f0;">
+    <div style="font-size:22px;font-weight:700;margin-bottom:16px;">상품 정보</div>
+    <table style="width:100%;border-collapse:collapse;font-size:14px;">
+      <tbody>
+        <tr><td style="width:180px;padding:12px;border:1px solid #eaeaea;background:#fafafa;font-weight:600;">브랜드</td><td style="padding:12px;border:1px solid #eaeaea;">${escapeHtml(form.brand || '-')}</td></tr>
+        <tr><td style="padding:12px;border:1px solid #eaeaea;background:#fafafa;font-weight:600;">상품명</td><td style="padding:12px;border:1px solid #eaeaea;">${escapeHtml(form.product_name || '-')}</td></tr>
+        <tr><td style="padding:12px;border:1px solid #eaeaea;background:#fafafa;font-weight:600;">품번</td><td style="padding:12px;border:1px solid #eaeaea;">${escapeHtml(form.item_code || '-')}</td></tr>
+        <tr><td style="padding:12px;border:1px solid #eaeaea;background:#fafafa;font-weight:600;">판매가</td><td style="padding:12px;border:1px solid #eaeaea;">${escapeHtml(form.price || '0')}원</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div style="padding:28px 20px 40px;"><div style="font-size:12px;color:#999999;line-height:1.8;text-align:center;">모니터 해상도 및 촬영 환경에 따라 실제 색상과 차이가 있을 수 있습니다.<br/>측정 방법에 따라 오차가 있을 수 있습니다.</div></div>
+</div>`.trim()
+}
+
+// ── CharacterBadge ──────────────────────────────────────────
+function CharacterBadge() {
+  const [failed, setFailed] = useState(false)
+  const [preview, setPreview] = useState('/character.png')
+
+  if (failed) {
+    return (
+      <label className="group flex h-14 w-14 cursor-pointer items-center justify-center rounded-full border border-neutral-200 bg-gradient-to-br from-neutral-900 to-neutral-700 text-sm font-bold text-white shadow-sm transition hover:scale-[1.03]">
+        H
+        <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) { setPreview(URL.createObjectURL(f)); setFailed(false) } }} />
+      </label>
+    )
+  }
+  return (
+    <label className="group relative block h-14 w-14 cursor-pointer overflow-hidden rounded-full border border-neutral-200 bg-white shadow-sm transition hover:scale-[1.03]">
+      <img src={preview} alt="하루애 캐릭터" className="h-full w-full object-cover" onError={() => setFailed(true)} />
+      <div className="absolute inset-0 flex items-center justify-center bg-black/0 text-[10px] font-semibold text-white opacity-0 transition group-hover:bg-black/35 group-hover:opacity-100">변경</div>
+      <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) setPreview(URL.createObjectURL(f)) }} />
+    </label>
+  )
+}
+
+// ── 로그인 화면 ───────────────────────────────────────────────
+function LoginScreen({ onLogin }: { onLogin: () => void }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  async function handleLogin() {
+    if (!supabase) { setError('Supabase 설정이 없습니다.'); return }
+    if (!email || !password) { setError('이메일과 비밀번호를 입력해주세요.'); return }
+    setLoading(true); setError('')
+    const { data, error: err } = await supabase.auth.signInWithPassword({ email, password })
+    setLoading(false)
+    if (err || !data.user) { setError('이메일 또는 비밀번호가 올바르지 않습니다.'); return }
+    if (data.user.email !== ADMIN_EMAIL) {
+      await supabase.auth.signOut()
+      setError('관리자 계정이 아닙니다.')
+      return
+    }
+    onLogin()
   }
 
-  if (opt.startsWith("city_")) {
-    return [
-      ...antiText,
-      "street sign",
-      "shop sign",
-      "license plate",
-      "traffic light text",
-      "graffiti text",
-      "newspaper text",
-      "crowd",
-      "bystanders",
-      "cars close-up",
-      "storefront text",
-    ];
-  }
-
-  return [
-    "studio equipment",
-    "light stand",
-    "softbox",
-    "reflector",
-    "c-stand",
-    "backdrop wrinkles",
-    "paper roll seam",
-  ];
-}
-
-function negativeBoostByShot(shot: Shot): string[] {
-  if (shot === "detail") return ["full body", "wide shot", "too much background"];
-  if (shot === "thumbnail") return ["awkward framing", "cut off feet", "cut off head"];
-  return ["harsh flash", "overly dramatic shadows"];
-}
-
-/* =========================
-   번역(교육용 콤마 1:1)
-========================= */
-function splitByComma(prompt: string) {
-  return prompt
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-const FIXED_KO_MAP: Record<string, string> = {
-  photorealistic: "실사(포토리얼)",
-  "ultra high resolution": "초고해상도",
-  "commercial fashion photography": "상업용 패션 촬영",
-  "natural lighting": "자연스러운 조명",
-  "realistic texture": "실제 같은 질감",
-  "accurate proportions": "정확한 비율(왜곡 방지)",
-  "e-commerce ready": "판매용 이미지 최적화",
-  "sharp focus": "선명한 초점",
-  "premium mood": "고급 무드",
-
-  "full body fashion photography": "전신 패션 촬영",
-  "head to toe visible": "머리부터 발끝까지 보이게",
-  "entire body fully in frame": "전신이 프레임 안에 완전 포함",
-  "face fully visible": "얼굴이 완전 보이게",
-  "shoes fully visible": "신발이 완전 보이게",
-  "centered composition": "중앙 구도",
-  "symmetrical framing": "대칭 프레이밍",
-  "no cropping": "크롭 금지",
-  "no cut off head": "머리 잘림 금지",
-  "no cut off face": "얼굴 잘림 금지",
-  "no cut off feet": "발 잘림 금지",
-  "no cut off shoes": "신발 잘림 금지",
-
-  "shallow depth of field": "얕은 심도(배경 흐림)",
-  bokeh: "보케(빛망울)",
-
-  "clean white background": "깨끗한 흰 배경",
-  "neutral studio background": "중립 스튜디오 배경",
-  "light gray backdrop": "연한 회색 배경지",
-  "warm beige studio background": "따뜻한 베이지 스튜디오 배경",
-  "soft gradient paper backdrop": "부드러운 그라데이션 종이 배경",
-  "studio lighting": "스튜디오 조명",
-
-  "minimal cafe background": "미니멀 카페 배경",
-  "cozy cafe background": "아늑한 카페 배경",
-  "wooden interior": "우드 인테리어",
-  "warm ambient lighting": "따뜻한 실내 조명",
-  "modern cafe background": "모던 카페 배경",
-  "dark tones": "어두운 톤",
-  "warm accent lights": "따뜻한 포인트 조명",
-
-  "minimal city street background": "미니멀 도시 거리 배경",
-  "New York city street background": "뉴욕 도시 거리 배경",
-  "urban vibe": "도시적인 분위기",
-  "cinematic mood": "시네마틱 무드",
-  "editorial lookbook set background": "룩북 세트 배경(화보용)",
-  "winter mood background": "겨울 무드 배경",
-  "dark neutral tones": "어두운 뉴트럴 톤",
-  "soft light": "부드러운 조명",
-
-  "close-up": "클로즈업(근접 촬영)",
-  "macro close-up": "매크로(질감 강조)",
-  "full body model": "전신 모델",
-  "editorial lookbook": "룩북(화보) 스타일",
-  "cinematic lighting": "시네마틱 조명",
-  "minimal set": "미니멀 세트",
-  "minimal props": "소품 최소화",
-  "soft shadow": "부드러운 그림자",
-  "focus on shoes": "신발에 초점",
-};
-
-function translatePhraseToKorean(phrase: string) {
-  const p = phrase.trim();
-  const lower = p.toLowerCase();
-
-  const direct = FIXED_KO_MAP[lower] ?? FIXED_KO_MAP[p];
-  if (direct) return direct;
-
-  if (lower.endsWith(" color")) return `색상: ${p.slice(0, -6).trim()}`;
-  if (lower.endsWith(" material")) return `소재: ${p.slice(0, -9).trim()}`;
-  if (lower.endsWith(" heel")) return `굽: ${p.slice(0, -5).trim()}`;
-
-  if (lower.includes("background")) return "배경 관련 지시";
-  if (lower.includes("lighting")) return "조명 관련 지시";
-  if (lower.includes("texture")) return "질감/소재 디테일";
-  if (lower.includes("pose")) return "포즈/자세";
-
-  return "의미(촬영/스타일 지시)";
-}
-
-function buildCommaTranslationTable(prompt: string) {
-  return splitByComma(prompt).map((en) => ({ en, ko: translatePhraseToKorean(en) }));
-}
-
-/* =========================
-   한글 설명(우측 패널)
-========================= */
-function shotKor(shot: Shot) {
-  if (shot === "thumbnail") return "썸네일(대표 판매컷, 전신 고정)";
-  if (shot === "detail") return "상세(디테일 클로즈업)";
-  return "룩북(감성/화보 컷, 전신 고정)";
-}
-
-function buildPromptGuideKorean(params: {
-  group: Group;
-  shot: Shot;
-  itemLabel: string;
-  bgText: string;
-  color: string;
-  material: string;
-  heel: string;
-  extra: string;
-  compact: boolean;
-}) {
-  const { group, shot, itemLabel, bgText, color, material, heel, extra, compact } = params;
-
-  const opt: string[] = [];
-  if (color.trim()) opt.push(`색상: ${color.trim()}`);
-  if (material.trim()) opt.push(`소재: ${material.trim()}`);
-  if (group === "shoes" && heel.trim()) opt.push(`굽: ${heel.trim()}`);
-  if (extra.trim()) opt.push(`추가 키워드: ${extra.trim()}`);
-
-  return [
-    `선택 아이템: ${itemLabel}`,
-    `촬영 목적: ${shotKor(shot)}`,
-    `프롬프트 길이: ${compact ? "핵심(짧게)" : "상세(길게)"}`,
-    `배경: ${bgText}`,
-    opt.length ? `입력 옵션: ${opt.join(" / ")}` : "입력 옵션: 없음(기본값)",
-    compact
-      ? "핵심 모드는 불필요한 수식어/보강 문장을 줄여 결과를 빠르게 안정화합니다."
-      : "상세 모드는 디테일/분위기 키워드를 풍부하게 넣어 화보 느낌을 강화합니다.",
-    shot === "detail"
-      ? "상세컷은 전신 고정을 제외하고 클로즈업을 우선합니다."
-      : "썸네일/룩북은 전신 고정(얼굴+신발 잘림 방지)을 강제합니다.",
-    "배경은 shallow depth of field/bokeh로 흐림 유지 → 상품 주목도 상승",
-  ];
-}
-
-function buildNegativeGuideKorean(params: { bgCategory: BgCategory; shot: Shot; compact: boolean }) {
-  const { bgCategory, shot, compact } = params;
-  const lines: string[] = [];
-  lines.push(compact ? "핵심 모드: 잘림/텍스트/왜곡 중심으로 최소 억제" : "상세 모드: 배경/샷/텍스트까지 자동 보강");
-  lines.push("텍스트/로고/워터마크 생성 방지");
-  lines.push("크롭/잘림(얼굴·신발) 방지 키워드 포함");
-  lines.push("저품질/왜곡(추가 팔다리, 워프) 제거");
-
-  if (!compact) {
-    lines.push("배경 과선명/난잡함 방지(상품 묻힘 방지)");
-    if (bgCategory === "cafe") lines.push("카페: 메뉴판/컵 로고/네온사인 텍스트 억제 강화");
-    if (bgCategory === "city") lines.push("도시: 간판/번호판/표지판 텍스트·군중 억제 강화");
-    if (bgCategory === "studio") lines.push("스튜디오: 조명 스탠드/장비 등장 억제");
-    if (shot === "detail") lines.push("상세컷: 전신/와이드샷 방지(디테일 집중)");
-  }
-
-  return lines;
-}
-
-/* =========================
-   UI
-========================= */
-function joinClean(parts: string[]) {
-  return parts.map((p) => p.trim()).filter(Boolean).join(", ");
-}
-
-function Button({
-  active,
-  children,
-  onClick,
-}: {
-  active?: boolean;
-  children: React.ReactNode;
-  onClick: () => void;
-}) {
   return (
-    <button onClick={onClick} className={`option-btn ${active ? "active" : ""}`}>
-      {children}
-    </button>
-  );
-}
-
-function Panel({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div
-      style={{
-        border: "1px solid #ddd",
-        borderRadius: 18,
-        padding: "12px 12px 14px",
-        background: "#fff",
-      }}
-    >
-      <div style={{ fontWeight: 900, marginBottom: 10 }}>{title}</div>
-      {children}
-    </div>
-  );
-}
-
-function Table({ rows }: { rows: Array<{ en: string; ko: string }> }) {
-  return (
-    <div
-      style={{
-        border: "1px solid #e5e5e5",
-        borderRadius: 14,
-        overflow: "hidden",
-        background: "#fff",
-      }}
-    >
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          padding: "10px 12px",
-          fontWeight: 900,
-          background: "#f3f3f3",
-          borderBottom: "1px solid #e5e5e5",
-        }}
-      >
-        <div>영문 구문</div>
-        <div>한글 의미</div>
-      </div>
-
-      <div style={{ maxHeight: 280, overflow: "auto" }}>
-        {rows.map((r, idx) => (
-          <div
-            key={idx}
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 10,
-              padding: "10px 12px",
-              borderBottom: idx === rows.length - 1 ? "none" : "1px solid #f0f0f0",
-              fontSize: 13,
-              lineHeight: 1.55,
-            }}
+    <div className="flex min-h-screen items-center justify-center bg-neutral-100 px-4">
+      <div className="w-full max-w-sm rounded-[28px] border border-neutral-200 bg-white p-8 shadow-[0_20px_60px_rgba(0,0,0,0.1)]">
+        <div className="mb-8 text-center">
+          <div className="mb-1 text-2xl font-bold tracking-widest text-neutral-900">HARU'E PICK</div>
+          <div className="text-xs tracking-widest text-amber-500">관리자 운영페이지</div>
+          <div className="mx-auto mt-4 h-px w-10 bg-amber-400" />
+        </div>
+        <div className="space-y-3">
+          <input
+            type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+            placeholder="이메일" onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
+            className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm outline-none focus:border-neutral-400 focus:bg-white"
+          />
+          <input
+            type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+            placeholder="비밀번호" onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
+            className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm outline-none focus:border-neutral-400 focus:bg-white"
+          />
+          {error && <div className="rounded-xl bg-red-50 px-4 py-2 text-xs text-red-500">{error}</div>}
+          <button
+            type="button" onClick={handleLogin} disabled={loading}
+            className="w-full rounded-2xl bg-neutral-900 py-3 text-sm font-bold text-white transition hover:bg-neutral-700 disabled:opacity-60"
           >
-            <div style={{ wordBreak: "break-word" }}>{r.en}</div>
-            <div style={{ wordBreak: "break-word" }}>{r.ko}</div>
-          </div>
-        ))}
+            {loading ? '로그인 중...' : '로그인'}
+          </button>
+        </div>
       </div>
     </div>
-  );
+  )
 }
 
-/* =========================
-   공통 input 스타일
-========================= */
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  maxWidth: "100%",
-  boxSizing: "border-box",
-  padding: "8px 12px",
-  borderRadius: 12,
-  border: "1px solid #ddd",
-  fontSize: 13,
-  outline: "none",
-};
+// ── 승인관리 패널 ─────────────────────────────────────────────
+function ApprovalsPanel() {
+  const [approvals, setApprovals] = useState<ApprovalRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const [message, setMessage] = useState('')
 
-/* =========================
-   페이지
-========================= */
-export default function Page() {
-  const [group, setGroup] = useState<Group>("apparel");
-  const [shot, setShot] = useState<Shot>("thumbnail");
+  const load = useCallback(async () => {
+    if (!supabase) return
+    setLoading(true)
+    const { data, error } = await supabase.from('user_approvals').select('*').order('created_at', { ascending: false })
+    setLoading(false)
+    if (error) { setMessage('불러오기 오류: ' + error.message); return }
+    setApprovals(data ?? [])
+  }, [])
 
-  const [apparel, setApparel] = useState<ApparelItem>("tshirt");
-  const [shoe, setShoe] = useState<ShoeItem>("sneakers");
+  useEffect(() => { load() }, [load])
 
-  const [color, setColor] = useState("");
-  const [material, setMaterial] = useState("");
-  const [heel, setHeel] = useState("");
-  const [extra, setExtra] = useState("");
-
-  const [isCollapsed, setIsCollapsed] = useState(false);
-
-  // ✅ 기본은 핵심(짧게)
-  const [compact, setCompact] = useState(true);
-
-  // 배경
-  const init = useMemo(() => recommendedBgByShot("thumbnail"), []);
-  const [bgCategory, setBgCategory] = useState<BgCategory>(init.cat);
-  const [bgOption, setBgOption] = useState<BgOption>(init.opt);
-  const [bgCustom, setBgCustom] = useState("");
-
-  // 사용자가 배경을 직접 고르면 샷 변경 시 자동추천 덮어쓰지 않음
-  const userPickedBgRef = useRef(false);
-
-  const onPickBgCategory = (cat: BgCategory) => {
-    setBgCategory(cat);
-    if (!bgCustom.trim()) setBgOption(BG_OPTIONS_BY_CATEGORY[cat][0]);
-    userPickedBgRef.current = true;
-  };
-
-  const onPickBgOption = (opt: BgOption) => {
-    setBgOption(opt);
-    userPickedBgRef.current = true;
-  };
-
-  const onChangeShot = (s: Shot) => {
-    setShot(s);
-    if (!bgCustom.trim() && !userPickedBgRef.current) {
-      const rec = recommendedBgByShot(s);
-      setBgCategory(rec.cat);
-      setBgOption(rec.opt);
-    }
-  };
-
-  const key: ItemKey = group === "apparel" ? `apparel:${apparel}` : `shoes:${shoe}`;
-  const preset = PRESETS[key];
-
-  const backgroundPhrase = useMemo(() => {
-    if (bgCustom.trim()) return bgCustom.trim();
-    return BG_OPTION_PROMPT[bgOption];
-  }, [bgCustom, bgOption]);
-
-  const bgText = useMemo(() => {
-    if (bgCustom.trim()) return `커스텀: ${bgCustom.trim()}`;
-    return `${BG_CATEGORY_LABEL[bgCategory]} · ${BG_OPTION_LABEL[bgOption]}`;
-  }, [bgCustom, bgCategory, bgOption]);
-
-  // ✅ Prompt (핵심/상세 토글: 길이 과확장 방지)
-  const prompt = useMemo(() => {
-    // 전신 고정: detail 제외 / compact면 짧은 버전 사용
-    const bodyLock =
-      shot !== "detail" ? (compact ? BODYLOCK_SHORT : FULL_BODY_LOCK) : "";
-
-    // 샷 문장: compact면 짧게
-    const shotPhrase =
-      compact ? (shot === "detail" ? "close-up details" : "clean framing") : preset.shot[shot];
-
-    // 배경: compact면 “첫 구문만” 사용(광범위 확장 방지)
-    const bgCompact = bgCustom.trim()
-      ? bgCustom.trim()
-      : BG_OPTION_PROMPT[bgOption].split(",")[0].trim();
-
-    const bg = compact ? bgCompact : backgroundPhrase;
-
-    // 품질: compact면 최소 3개, 상세면 기존 풀
-    const quality = compact ? QUALITY_SHORT : COMMON_QUALITY;
-
-    return joinClean([
-      preset.base,
-      shotPhrase,
-      bodyLock,
-      bg,
-      color ? `${color} color` : "",
-      material ? `${material} material` : "",
-      group === "shoes" && heel ? `${heel} heel` : "",
-      extra,
-      quality,
-    ]);
-  }, [
-    preset,
-    shot,
-    compact,
-    bgOption,
-    bgCustom,
-    backgroundPhrase,
-    color,
-    material,
-    heel,
-    extra,
-    group,
-  ]);
-
-  // ✅ Negative Prompt (핵심/상세 토글)
-  const negativePrompt = useMemo(() => {
-    if (compact) return NEGATIVE_SHORT;
-
-    const bgBoost = negativeBoostByBg(bgOption);
-    const shotBoost = negativeBoostByShot(shot);
-
-    return joinClean([
-      COMMON_NEGATIVE,
-      BLUR_CONTROL_NEGATIVE,
-      CROP_BLOCK_NEGATIVE,
-      joinClean(bgBoost),
-      joinClean(shotBoost),
-    ]);
-  }, [bgOption, shot, compact]);
-
-  const itemLabel = useMemo(
-    () => (group === "apparel" ? APPAREL_LABEL[apparel] : SHOE_LABEL[shoe]),
-    [group, apparel, shoe]
-  );
-
-  const promptGuideKorean = useMemo(
-    () =>
-      buildPromptGuideKorean({
-        group,
-        shot,
-        itemLabel,
-        bgText,
-        color,
-        material,
-        heel,
-        extra,
-        compact,
-      }),
-    [group, shot, itemLabel, bgText, color, material, heel, extra, compact]
-  );
-
-  const negativeGuideKorean = useMemo(
-    () => buildNegativeGuideKorean({ bgCategory, shot, compact }),
-    [bgCategory, shot, compact]
-  );
-
-  const translationRows = useMemo(() => buildCommaTranslationTable(prompt), [prompt]);
-
-const copy = async (text: string) => {
-  try {
-    // 1️⃣ 최신 Clipboard API (localhost / HTTPS)
-    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      alert("복사 완료");
-      return;
-    }
-
-    // 2️⃣ fallback (네트워크 주소 / HTTP / 구형 브라우저)
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.setAttribute("readonly", "");
-    textarea.style.position = "fixed";
-    textarea.style.left = "-9999px";
-    textarea.style.top = "0";
-
-    document.body.appendChild(textarea);
-    textarea.focus();
-    textarea.select();
-
-    const success = document.execCommand("copy");
-    document.body.removeChild(textarea);
-
-    if (!success) throw new Error("copy failed");
-    alert("복사 완료");
-  } catch (e) {
-    console.error(e);
-    alert("복사 실패: 브라우저 보안 설정을 확인하세요.");
+  async function toggle(row: ApprovalRow) {
+    if (!supabase) return
+    const { error } = await supabase.from('user_approvals').update({ approved: !row.approved }).eq('user_id', row.user_id)
+    if (error) { setMessage('오류: ' + error.message); return }
+    setMessage((!row.approved ? '승인' : '승인 취소') + ' 처리되었습니다.')
+    await load()
   }
-};
 
-
-  const resetBgOnly = () => {
-    setBgCustom("");
-    userPickedBgRef.current = false;
-    const rec = recommendedBgByShot(shot);
-    setBgCategory(rec.cat);
-    setBgOption(rec.opt);
-  };
-
-  const resetAll = () => {
-    setColor("");
-    setMaterial("");
-    setHeel("");
-    setExtra("");
-    resetBgOnly();
-  };
+  const pending = approvals.filter((a) => !a.approved)
+  const approved = approvals.filter((a) => a.approved)
 
   return (
-    <main style={{ maxWidth: 1120, margin: "0 auto", padding: 26 }}>
-      {/* 버튼 스타일 (hover/active shadow/indicator) */}
-      <style jsx global>{`
-        .option-btn {
-          width: 100%;
-          max-width: 100%;
-          position: relative;
-          padding: 9px 12px;
-          border-radius: 12px;
-          border: 1px solid #ddd;
-          background: #fff;
-          color: #111;
-          cursor: pointer;
-          font-weight: 900;
-          letter-spacing: -0.2px;
-          transition: background 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
-        }
-        .option-btn:hover {
-          background: #f5f5f5;
-        }
-        .option-btn.active {
-          background: #3a3a3a;
-          color: #fff;
-          border-color: #3a3a3a;
-          box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.15),
-            inset 0 -1px 2px rgba(0, 0, 0, 0.25);
-        }
-        .option-btn.active::before {
-          content: "";
-          position: absolute;
-          left: 0;
-          top: 20%;
-          width: 2px;
-          height: 60%;
-          background: #bdbdbd;
-          border-radius: 2px;
-        }
-      `}</style>
-
-      {/* 헤더 */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-        <h1 style={{ fontSize: 24, margin: 0 }}>하루애 의류 · 신발 프롬프트</h1>
-
-        <button
-          onClick={() => setIsCollapsed((v) => !v)}
-          style={{
-            marginLeft: "auto",
-            padding: "10px 14px",
-            borderRadius: 14,
-            border: "1px solid #ddd",
-            background: "#fff",
-            cursor: "pointer",
-            fontWeight: 900,
-          }}
-        >
-          {isCollapsed ? "펼치기" : "접기"}
-        </button>
-
-        <button
-          onClick={resetAll}
-          style={{
-            padding: "10px 14px",
-            borderRadius: 14,
-            border: "1px solid #ddd",
-            background: "#fff",
-            cursor: "pointer",
-            fontWeight: 900,
-          }}
-        >
-          전체 초기화
-        </button>
-      </div>
-
-      {!isCollapsed && (
-        <>
-          {/* 그룹 */}
-          <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-            <Button active={group === "apparel"} onClick={() => setGroup("apparel")}>
-              {GROUP_LABEL.apparel}
-            </Button>
-            <Button active={group === "shoes"} onClick={() => setGroup("shoes")}>
-              {GROUP_LABEL.shoes}
-            </Button>
+    <div className="space-y-4">
+      {message && (
+        <div className="rounded-2xl border border-neutral-200 bg-white px-4 py-3 text-sm text-neutral-700 shadow-sm">
+          {message}
+        </div>
+      )}
+      <div className="rounded-[24px] border border-neutral-200 bg-white p-5 shadow-sm">
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <div className="text-base font-semibold text-neutral-900">승인 대기</div>
+            <div className="text-xs text-neutral-500">{pending.length}명 대기 중</div>
           </div>
-
-          {/* 아이템 */}
-          <div style={{ border: "1px solid #eee", borderRadius: 18, padding: 14, marginBottom: 14, background: "#fff" }}>
-            <div style={{ fontWeight: 900, marginBottom: 10 }}>
-              {group === "apparel" ? "의류 아이템" : "신발 아이템"}
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
-              {group === "apparel"
-                ? (Object.keys(APPAREL_LABEL) as ApparelItem[]).map((k) => (
-                    <Button key={k} active={apparel === k} onClick={() => setApparel(k)}>
-                      {APPAREL_LABEL[k]}
-                    </Button>
-                  ))
-                : (Object.keys(SHOE_LABEL) as ShoeItem[]).map((k) => (
-                    <Button key={k} active={shoe === k} onClick={() => setShoe(k)}>
-                      {SHOE_LABEL[k]}
-                    </Button>
-                  ))}
-            </div>
-          </div>
-
-          {/* 샷 */}
-          <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-            {(Object.keys(SHOT_LABEL) as Shot[]).map((s) => (
-              <Button key={s} active={shot === s} onClick={() => onChangeShot(s)}>
-                {SHOT_LABEL[s]}
-              </Button>
+          <button type="button" onClick={load} className="rounded-xl border border-neutral-200 px-3 py-2 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50">새로고침</button>
+        </div>
+        {loading ? (
+          <div className="py-10 text-center text-sm text-neutral-400">불러오는 중...</div>
+        ) : pending.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-neutral-300 bg-neutral-50 py-10 text-center text-sm text-neutral-400">대기중인 신청자가 없습니다.</div>
+        ) : (
+          <div className="divide-y divide-neutral-100 rounded-2xl border border-neutral-200">
+            {pending.map((row) => (
+              <div key={row.id} className="flex items-center gap-3 px-4 py-3">
+                <div className="flex-1">
+                  <div className="text-sm font-medium text-neutral-900">{row.email}</div>
+                  <div className="text-xs text-neutral-400">{new Date(row.created_at).toLocaleDateString('ko-KR')} 가입</div>
+                </div>
+                <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-600">대기중</span>
+                <button type="button" onClick={() => toggle(row)} className="rounded-xl bg-neutral-900 px-4 py-2 text-xs font-bold text-white transition hover:bg-neutral-700">승인</button>
+              </div>
             ))}
           </div>
+        )}
+      </div>
 
-          {/* ✅ 프롬프트 길이 (기본: 핵심) */}
-          <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-            <Button active={compact} onClick={() => setCompact(true)}>
-              핵심(짧게)
-            </Button>
-            <Button active={!compact} onClick={() => setCompact(false)}>
-              상세(길게)
-            </Button>
+      <div className="rounded-[24px] border border-neutral-200 bg-white p-5 shadow-sm">
+        <div className="mb-4">
+          <div className="text-base font-semibold text-neutral-900">승인된 사용자</div>
+          <div className="text-xs text-neutral-500">{approved.length}명</div>
+        </div>
+        {approved.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-neutral-300 bg-neutral-50 py-10 text-center text-sm text-neutral-400">승인된 사용자가 없습니다.</div>
+        ) : (
+          <div className="divide-y divide-neutral-100 rounded-2xl border border-neutral-200">
+            {approved.map((row) => (
+              <div key={row.id} className="flex items-center gap-3 px-4 py-3">
+                <div className="flex-1">
+                  <div className="text-sm font-medium text-neutral-900">{row.email}</div>
+                  <div className="text-xs text-neutral-400">{new Date(row.created_at).toLocaleDateString('ko-KR')} 가입</div>
+                </div>
+                <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-semibold text-green-600">승인됨</span>
+                <button type="button" onClick={() => toggle(row)} className="rounded-xl border border-neutral-200 px-4 py-2 text-xs font-medium text-neutral-600 transition hover:border-red-200 hover:bg-red-50 hover:text-red-500">취소</button>
+              </div>
+            ))}
           </div>
+        )}
+      </div>
+    </div>
+  )
+}
 
-          {/* 배경 */}
-          <div style={{ border: "1px solid #eee", borderRadius: 18, padding: 14, marginBottom: 14, background: "#fff" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-              <div style={{ fontWeight: 900 }}>배경 선택</div>
-              <button
-                onClick={resetBgOnly}
-                style={{
-                  marginLeft: "auto",
-                  padding: "8px 12px",
-                  borderRadius: 12,
-                  border: "1px solid #ddd",
-                  background: "#fff",
-                  cursor: "pointer",
-                  fontWeight: 900,
-                }}
-              >
-                배경 추천으로 되돌리기
+// ── 메인 페이지 ───────────────────────────────────────────────
+export default function Page() {
+  const router = useRouter()
+
+  // 로그인 상태
+  const [authed, setAuthed] = useState<boolean | null>(null)
+
+  // 탭
+  const [activeTab, setActiveTab] = useState<Tab>('products')
+
+  // 상품관리
+  const [products, setProducts] = useState<ProductRow[]>([])
+  const [selectedId, setSelectedId] = useState<string>('')
+  const [editMode, setEditMode] = useState(false)
+  const [isNewMode, setIsNewMode] = useState(false)
+  const [form, setForm] = useState<EditableProduct>(toEditable(null))
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState('')
+  const [search, setSearch] = useState('')
+
+  const selectedProduct = useMemo(() => products.find((p) => p.id === selectedId) ?? null, [products, selectedId])
+  const previewSubImages = useMemo(() => form.sub_images_text.split('\n').map((v) => v.trim()).filter(Boolean), [form.sub_images_text])
+  const filteredProducts = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return products
+    return products.filter((p) => p.product_name.toLowerCase().includes(q) || p.item_code.toLowerCase().includes(q) || p.brand.toLowerCase().includes(q))
+  }, [products, search])
+
+  // ── 세션 확인 ──
+  useEffect(() => {
+    if (!supabase) {
+      setAuthed(false)
+      setMessage('Supabase 환경변수가 없습니다. .env.local을 확인해주세요.')
+      return
+    }
+
+    let mounted = true
+
+    async function checkSession() {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!mounted) return
+      setAuthed(session?.user?.email === ADMIN_EMAIL)
+    }
+
+    checkSession()
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!mounted) return
+      setAuthed(session?.user?.email === ADMIN_EMAIL)
+    })
+
+    return () => {
+      mounted = false
+      listener.subscription.unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => { if (authed) loadProducts() }, [authed])
+
+  useEffect(() => {
+    if (selectedProduct && !editMode && !isNewMode) setForm(toEditable(selectedProduct))
+  }, [selectedProduct, editMode, isNewMode])
+
+  // ── 상품 로드 ──
+  async function loadProducts() {
+    if (!supabase) { setMessage('환경변수 설정이 없습니다.'); return }
+    setLoading(true)
+    setMessage('')
+
+    const { data, error } = await supabase
+      .from('products')
+      .select('*')
+      .order('created_at', { ascending: false })
+
+    setLoading(false)
+
+    if (error) {
+      setMessage(`불러오기 오류: ${error.message}`)
+      return
+    }
+
+    const rows = (data ?? []).map(normalizeProduct)
+    setProducts(rows)
+
+    if (rows.length === 0) {
+      setSelectedId('')
+      if (!editMode && !isNewMode) setForm(emptyEditable())
+      return
+    }
+
+    const exists = rows.some((row) => row.id === selectedId)
+    const nextSelectedId = exists ? selectedId : rows[0].id || ''
+    setSelectedId(nextSelectedId)
+
+    if (!editMode && !isNewMode) {
+      const nextSelected = rows.find((row) => row.id === nextSelectedId) ?? rows[0]
+      setForm(toEditable(nextSelected))
+    }
+  }
+
+  function handleSelectProduct(product: ProductRow) {
+    setSelectedId(product.id || ''); setEditMode(false); setIsNewMode(false)
+    setForm(toEditable(product)); setMessage('')
+  }
+
+  function handleStartEdit() {
+    if (!selectedProduct) return
+    setEditMode(true); setIsNewMode(false); setForm(toEditable(selectedProduct)); setMessage('')
+  }
+
+  function handleStartNew() {
+    setIsNewMode(true); setEditMode(false); setSelectedId(''); setForm(emptyEditable()); setMessage('')
+  }
+
+  function handleCancelEdit() {
+    setEditMode(false)
+    setIsNewMode(false)
+    setForm(selectedProduct ? toEditable(selectedProduct) : emptyEditable())
+    setMessage('수정을 취소했습니다.')
+  }
+
+  function handleChange<K extends keyof EditableProduct>(key: K, value: EditableProduct[K]) {
+    setForm((prev) => ({ ...prev, [key]: value }))
+  }
+
+  function handleGenerateHtml() {
+    setForm((prev) => ({ ...prev, html: buildAutoHtml(form) }))
+    setMessage('HTML 자동 생성이 적용되었습니다.')
+  }
+
+  async function checkDuplicateItemCode(itemCode: string, excludeId?: string) {
+    if (!supabase) return false
+
+    const { data, error } = await supabase
+      .from('products')
+      .select('id,item_code')
+      .eq('item_code', itemCode)
+
+    if (error) {
+      setMessage(`중복확인 오류: ${error.message}`)
+      return true
+    }
+
+    const duplicate = (data ?? []).some((row: { id?: string }) => row.id !== excludeId)
+    return duplicate
+  }
+
+  // ── 저장 (수정) ──
+  async function handleSave() {
+    if (!supabase) { setMessage('Supabase 설정이 없습니다.'); return }
+    if (!form.product_name.trim()) { setMessage('상품명을 입력해주세요.'); return }
+    if (!form.item_code.trim()) { setMessage('품번을 입력해주세요.'); return }
+    if (await checkDuplicateItemCode(form.item_code.trim(), form.id)) { setMessage('동일한 품번이 이미 등록되어 있습니다.'); return }
+    setSaving(true); setMessage('')
+    const payload = {
+      product_name: form.product_name.trim(), item_code: form.item_code.trim(),
+      brand: form.brand.trim(), price: Number(form.price || 0),
+      main_image: form.main_image.trim(),
+      sub_images: form.sub_images_text.split('\n').map((v) => v.trim()).filter(Boolean),
+      html: form.html,
+    }
+    const { error } = await supabase.from('products').update(payload).eq('id', form.id)
+    setSaving(false)
+    if (error) { setMessage(`저장 오류: ${error.message}`); return }
+    setEditMode(false); setMessage('저장되었습니다.')
+    await loadProducts(); setSelectedId(form.id!)
+  }
+
+  // ── 신규 등록 ──
+  async function handleCreate() {
+    if (!supabase) { setMessage('Supabase 설정이 없습니다.'); return }
+    if (!form.product_name.trim()) { setMessage('상품명을 입력해주세요.'); return }
+    if (!form.item_code.trim()) { setMessage('품번을 입력해주세요.'); return }
+    if (await checkDuplicateItemCode(form.item_code.trim())) { setMessage('동일한 품번이 이미 등록되어 있습니다.'); return }
+    setSaving(true); setMessage('')
+    const payload = {
+      product_name: form.product_name.trim(), item_code: form.item_code.trim(),
+      brand: form.brand.trim(), price: Number(form.price || 0),
+      main_image: form.main_image.trim(),
+      sub_images: form.sub_images_text.split('\n').map((v) => v.trim()).filter(Boolean),
+      html: form.html,
+    }
+    const { data, error } = await supabase.from('products').insert(payload).select().single()
+    setSaving(false)
+    if (error) { setMessage(`등록 오류: ${error.message}`); return }
+    setIsNewMode(false); setMessage('신규 상품이 등록되었습니다.')
+    await loadProducts(); if (data?.id) setSelectedId(data.id)
+  }
+
+  // ── 삭제 ──
+  async function handleDelete() {
+    if (!supabase || !selectedProduct?.id) return
+    if (!window.confirm(`"${selectedProduct.product_name}" 상품을 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.`)) return
+    const { error } = await supabase.from('products').delete().eq('id', selectedProduct.id)
+    if (error) { setMessage(`삭제 오류: ${error.message}`); return }
+    setEditMode(false)
+    setIsNewMode(false)
+    setMessage('삭제되었습니다.')
+    setSelectedId('')
+    await loadProducts()
+  }
+
+  // ── 엑셀 다운로드 ──
+  async function downloadExcel() {
+    const targetRows = editMode || isNewMode ? [{ product_name: form.product_name.trim(), item_code: form.item_code.trim(), brand: form.brand.trim(), price: form.price, main_image: form.main_image.trim(), sub_images: previewSubImages, html: form.html }]
+      : selectedProduct ? [selectedProduct] : products
+    if (!targetRows.length) { setMessage('다운로드할 상품이 없습니다.'); return }
+    const XLSX = await import('xlsx')
+    const sabangRows = targetRows.map((p: any) => ({
+      상품명: p.product_name ?? '', 자체상품코드: p.item_code ?? '', 브랜드명: p.brand ?? '',
+      판매가: p.price ?? '', 대표이미지: p.main_image ?? '',
+      추가이미지: Array.isArray(p.sub_images) ? p.sub_images.join('\n') : '', 상세설명: p.html ?? '',
+    }))
+    const worksheet = XLSX.utils.json_to_sheet(sabangRows)
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, worksheet, '사방넷업로드')
+    XLSX.writeFile(workbook, targetRows.length === 1 ? `${targetRows[0].item_code || 'product'}_sabang.xlsx` : 'products_sabang.xlsx')
+    setMessage('엑셀 파일을 다운로드했습니다.')
+  }
+
+  function handleMenuClick(item: { name: string; desc: string; route?: string; tab?: Tab }) {
+    if (item.route) { router.push(item.route); return }
+    if (item.tab) { setActiveTab(item.tab); return }
+    setMessage(`${item.name} 메뉴는 다음 단계에서 연결 예정입니다.`)
+  }
+
+  async function handleLogout() {
+    if (supabase) await supabase.auth.signOut()
+    setAuthed(false)
+  }
+
+  // ── 로딩 중 ──
+  if (authed === null) {
+    return <div className="flex min-h-screen items-center justify-center bg-neutral-100 text-sm text-neutral-400">로딩 중...</div>
+  }
+
+  // ── 로그인 화면 ──
+  if (!authed) {
+    return <LoginScreen onLogin={() => setAuthed(true)} />
+  }
+
+  const infoCards = [
+    { title: '전체 상품', value: `${products.length}개`, sub: '등록 상품 수' },
+    { title: '선택 상품', value: selectedProduct?.item_code || '-', sub: selectedProduct?.brand || '미선택' },
+    { title: '현재 모드', value: isNewMode ? '신규등록' : editMode ? '수정모드' : '보기모드', sub: isNewMode ? '새 상품 입력 중' : editMode ? '실시간 라이브 프리뷰' : '상품 상세 상태' },
+  ]
+
+  const isEditing = editMode || isNewMode
+
+  return (
+    <div className="min-h-screen bg-neutral-100">
+      <div className="mx-auto max-w-[1720px] px-4 py-4">
+
+        {/* 헤더 */}
+        <div className="mb-4 rounded-[28px] border border-neutral-200 bg-white p-5 shadow-[0_10px_30px_rgba(0,0,0,0.05)]">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-center gap-4">
+              <CharacterBadge />
+              <div>
+                <h1 className="text-2xl font-bold tracking-tight text-neutral-900">상품등록 운영페이지</h1>
+                <p className="mt-1 text-sm text-neutral-500">상품 수정 · 상세 HTML 관리 · 사방넷 업로드용 엑셀 다운로드</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                {infoCards.map((card) => (
+                  <div key={card.title} className="rounded-2xl border border-neutral-200 bg-neutral-50 px-4 py-3">
+                    <div className="text-xs font-medium text-neutral-500">{card.title}</div>
+                    <div className="mt-1 text-lg font-bold text-neutral-900">{card.value}</div>
+                    <div className="mt-1 text-xs text-neutral-500">{card.sub}</div>
+                  </div>
+                ))}
+              </div>
+              <button type="button" onClick={handleLogout} className="rounded-2xl border border-neutral-200 px-4 py-3 text-sm font-medium text-neutral-600 transition hover:bg-neutral-50 whitespace-nowrap">
+                로그아웃
               </button>
             </div>
+          </div>
+        </div>
 
-            {/* 대분류 */}
-            <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
-              {(Object.keys(BG_CATEGORY_LABEL) as BgCategory[]).map((c) => (
-                <Button key={c} active={!bgCustom.trim() && bgCategory === c} onClick={() => onPickBgCategory(c)}>
-                  {BG_CATEGORY_LABEL[c]}
-                </Button>
-              ))}
-            </div>
+        {message && (
+          <div className="mb-4 rounded-2xl border border-neutral-200 bg-white px-4 py-3 text-sm text-neutral-700 shadow-sm">
+            {message}
+          </div>
+        )}
 
-            {/* 소분류 (깨짐 방지용 minmax) */}
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-                gap: 10,
-                marginBottom: 10,
-              }}
-            >
-              {BG_OPTIONS_BY_CATEGORY[bgCategory].map((opt) => (
-                <Button key={opt} active={!bgCustom.trim() && bgOption === opt} onClick={() => onPickBgOption(opt)}>
-                  {BG_OPTION_LABEL[opt]}
-                </Button>
-              ))}
-            </div>
+        <div className="grid grid-cols-12 gap-4">
 
-            {/* 커스텀 */}
-            <Panel title="배경 커스텀(직접 입력)">
-              <input
-                value={bgCustom}
-                onChange={(e) => {
-                  setBgCustom(e.target.value);
-                  if (e.target.value.trim()) userPickedBgRef.current = true;
-                }}
-                placeholder='예: "cozy cafe background, bokeh, shallow depth of field"'
-                style={inputStyle}
-              />
-              <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
-                커스텀 입력이 있으면 프리셋보다 우선 적용됩니다.
+          {/* 사이드 메뉴 */}
+          <aside className="col-span-12 xl:col-span-2">
+            <div className="rounded-[24px] border border-neutral-200 bg-white p-4 shadow-sm">
+              <div className="mb-4 text-sm font-semibold text-neutral-900">운영 메뉴</div>
+              <div className="space-y-2">
+                {MENU_ITEMS.map((item) => (
+                  <button key={item.name} type="button" onClick={() => handleMenuClick(item)}
+                    className={`group w-full rounded-2xl border px-4 py-3 text-left transition ${item.tab === activeTab ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white hover:bg-neutral-50'}`}>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className={`text-sm font-semibold ${item.tab === activeTab ? 'text-white' : 'text-neutral-900'}`}>{item.name}</div>
+                        <div className={`text-[11px] ${item.tab === activeTab ? 'text-neutral-300' : 'text-neutral-500'}`}>{item.desc}</div>
+                      </div>
+                      <span className={`${item.tab === activeTab ? 'text-neutral-300' : 'text-neutral-300 group-hover:text-neutral-500'}`}>›</span>
+                    </div>
+                  </button>
+                ))}
               </div>
-            </Panel>
-          </div>
+            </div>
+          </aside>
 
-          {/* 옵션 */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-              gap: 12,
-              marginBottom: 14,
-            }}
-          >
-            <Panel title="색상">
-              <input
-                value={color}
-                onChange={(e) => setColor(e.target.value)}
-                placeholder="예: black / beige / navy"
-                style={inputStyle}
-              />
-            </Panel>
+          {/* 승인관리 탭 */}
+          {activeTab === 'approvals' ? (
+            <div className="col-span-12 xl:col-span-10">
+              <ApprovalsPanel />
+            </div>
+          ) : (
+            <>
+              {/* 상품 목록 */}
+              <section className="col-span-12 xl:col-span-3">
+                <div className="rounded-[24px] border border-neutral-200 bg-white p-4 shadow-sm">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div>
+                      <div className="text-base font-semibold text-neutral-900">상품 목록</div>
+                      <div className="text-xs text-neutral-500">상품 선택 시 우측에 상세정보가 표시됩니다</div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button type="button" onClick={handleStartNew} className="rounded-xl bg-neutral-900 px-3 py-2 text-xs font-bold text-white transition hover:bg-neutral-700">+ 신규</button>
+                      <button type="button" onClick={loadProducts} className="rounded-xl border border-neutral-200 px-3 py-2 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50">새로고침</button>
+                    </div>
+                  </div>
+                  <div className="mb-3">
+                    <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="상품명 / 품번 / 브랜드 검색"
+                      className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm outline-none transition focus:border-neutral-400 focus:bg-white" />
+                  </div>
+                  <div className="max-h-[900px] space-y-3 overflow-auto pr-1">
+                    {loading ? (
+                      <div className="rounded-2xl border border-dashed border-neutral-300 bg-neutral-50 px-4 py-10 text-center text-sm text-neutral-400">상품을 불러오는 중입니다.</div>
+                    ) : filteredProducts.length === 0 ? (
+                      <div className="rounded-2xl border border-dashed border-neutral-300 bg-neutral-50 px-4 py-10 text-center text-sm text-neutral-400">표시할 상품이 없습니다.</div>
+                    ) : (
+                      filteredProducts.map((product) => {
+                        const active = product.id === selectedId
+                        return (
+                          <button key={product.id || product.item_code} type="button" onClick={() => handleSelectProduct(product)}
+                            className={`w-full rounded-2xl border p-3 text-left transition ${active ? 'border-neutral-900 bg-neutral-900 text-white shadow-md' : 'border-neutral-200 bg-white hover:bg-neutral-50'}`}>
+                            <div className="flex gap-3">
+                              <div className="h-20 w-20 overflow-hidden rounded-xl border border-neutral-200 bg-neutral-100">
+                                {product.main_image ? (
+                                  <img src={product.main_image} alt={product.product_name} className="h-full w-full object-cover" />
+                                ) : (
+                                  <div className="flex h-full w-full items-center justify-center text-[11px] text-neutral-400">NO IMAGE</div>
+                                )}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className={`line-clamp-2 text-sm font-semibold ${active ? 'text-white' : 'text-neutral-900'}`}>{product.product_name || '상품명 없음'}</div>
+                                <div className={`mt-2 text-xs ${active ? 'text-neutral-200' : 'text-neutral-500'}`}>{product.item_code || '-'}</div>
+                                <div className="mt-2 flex items-center gap-2">
+                                  <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${active ? 'bg-white/15 text-white' : 'bg-neutral-100 text-neutral-700'}`}>{product.brand || '-'}</span>
+                                  <span className={`text-xs ${active ? 'text-neutral-200' : 'text-neutral-500'}`}>{product.price || 0}원</span>
+                                </div>
+                              </div>
+                            </div>
+                          </button>
+                        )
+                      })
+                    )}
+                  </div>
+                </div>
+              </section>
 
-            <Panel title="소재">
-              <input
-                value={material}
-                onChange={(e) => setMaterial(e.target.value)}
-                placeholder={group === "apparel" ? "예: cotton / wool / denim" : "예: leather / suede / knit"}
-                style={inputStyle}
-              />
-            </Panel>
+              {/* 상품 상세 */}
+              <section className="col-span-12 xl:col-span-7">
+                <div className="rounded-[24px] border border-neutral-200 bg-white p-4 shadow-sm">
+                  {!selectedProduct && !isNewMode ? (
+                    <div className="flex min-h-[760px] flex-col items-center justify-center gap-4 rounded-[22px] border border-dashed border-neutral-300 bg-neutral-50 text-neutral-400">
+                      <div className="text-sm">좌측 상품을 선택하거나 신규 상품을 등록하세요.</div>
+                      <button type="button" onClick={handleStartNew} className="rounded-2xl bg-neutral-900 px-6 py-3 text-sm font-bold text-white transition hover:bg-neutral-700">+ 신규 상품 등록</button>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {/* 상단 액션바 */}
+                      <div className="flex flex-col gap-3 rounded-[22px] border border-neutral-200 bg-gradient-to-r from-neutral-900 to-neutral-800 p-4 text-white lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                          <div className="text-lg font-bold">{isNewMode ? '신규 상품 등록' : editMode ? '상품 수정 모드' : '상품 상세 보기'}</div>
+                          <div className="mt-1 text-sm text-neutral-200">기본정보 · 이미지 · 상세 HTML · 자동생성 · 사방넷 엑셀 다운로드</div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {isNewMode ? (
+                            <>
+                              <button type="button" onClick={handleGenerateHtml} className="rounded-xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20">HTML 자동 생성</button>
+                              <button type="button" onClick={handleCreate} disabled={saving} className="rounded-xl bg-white px-4 py-2 text-sm font-bold text-neutral-900 transition hover:bg-neutral-100 disabled:opacity-60">{saving ? '등록중...' : '등록'}</button>
+                              <button type="button" onClick={handleCancelEdit} className="rounded-xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20">취소</button>
+                            </>
+                          ) : !editMode ? (
+                            <>
+                              <button type="button" onClick={handleStartEdit} className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-neutral-900 transition hover:bg-neutral-100">편집</button>
+                              <button type="button" onClick={handleDelete} className="rounded-xl border border-red-400/40 bg-red-500/20 px-4 py-2 text-sm font-semibold text-red-200 transition hover:bg-red-500/40">삭제</button>
+                            </>
+                          ) : (
+                            <>
+                              <button type="button" onClick={handleGenerateHtml} className="rounded-xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20">HTML 자동 생성</button>
+                              <button type="button" onClick={handleSave} disabled={saving} className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-neutral-900 transition hover:bg-neutral-100 disabled:opacity-60">{saving ? '저장중...' : '저장'}</button>
+                              <button type="button" onClick={handleCancelEdit} className="rounded-xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20">취소</button>
+                            </>
+                          )}
+                          <button type="button" onClick={downloadExcel} className="rounded-xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20">사방넷 엑셀 다운로드</button>
+                        </div>
+                      </div>
 
-            <Panel title="굽(신발)">
-              <input
-                value={heel}
-                onChange={(e) => setHeel(e.target.value)}
-                placeholder="예: 0cm / 3cm / 5cm"
-                disabled={group !== "shoes"}
-                style={{
-                  ...inputStyle,
-                  opacity: group === "shoes" ? 1 : 0.5,
-                  background: group === "shoes" ? "#fff" : "#f6f6f6",
-                }}
-              />
-            </Panel>
+                      {/* 폼 + 프리뷰 */}
+                      <div className="grid grid-cols-1 gap-4 2xl:grid-cols-[1.1fr_1fr]">
+                        <div className="space-y-4">
+                          <div className="rounded-[22px] border border-neutral-200 bg-neutral-50 p-4">
+                            <div className="mb-4 flex items-center justify-between">
+                              <div>
+                                <div className="text-base font-semibold text-neutral-900">상품 기본 정보</div>
+                                <div className="text-xs text-neutral-500">{isEditing ? '편집 시 우측 프리뷰가 즉시 반영됩니다' : '읽기 전용'}</div>
+                              </div>
+                              <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-neutral-700">{form.item_code || '-'}</span>
+                            </div>
+                            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                              <Field label="상품명"><input value={form.product_name} onChange={(e) => handleChange('product_name', e.target.value)} disabled={!isEditing} className={inputClass(isEditing)} /></Field>
+                              <Field label="품번"><input value={form.item_code} onChange={(e) => handleChange('item_code', e.target.value)} disabled={!isEditing} className={inputClass(isEditing)} /></Field>
+                              <Field label="브랜드">
+                                <select value={form.brand} onChange={(e) => handleChange('brand', e.target.value)} disabled={!isEditing} className={inputClass(isEditing)}>
+                                  {BRAND_OPTIONS.map((b) => <option key={b} value={b}>{b}</option>)}
+                                </select>
+                              </Field>
+                              <Field label="가격"><input value={form.price} onChange={(e) => handleChange('price', e.target.value)} disabled={!isEditing} className={inputClass(isEditing)} /></Field>
+                              <div className="md:col-span-2"><Field label="대표이미지 URL"><input value={form.main_image} onChange={(e) => handleChange('main_image', e.target.value)} disabled={!isEditing} className={inputClass(isEditing)} /></Field></div>
+                              <div className="md:col-span-2"><Field label="추가이미지 URL"><textarea value={form.sub_images_text} onChange={(e) => handleChange('sub_images_text', e.target.value)} disabled={!isEditing} rows={6} className={textareaClass(isEditing)} placeholder="한 줄에 1개 URL씩 입력" /></Field></div>
+                            </div>
+                          </div>
+                          <div className="rounded-[22px] border border-neutral-200 bg-neutral-50 p-4">
+                            <div className="mb-4 flex items-center justify-between">
+                              <div className="text-base font-semibold text-neutral-900">상세 HTML 편집</div>
+                              {isEditing && <button type="button" onClick={handleGenerateHtml} className="rounded-xl border border-neutral-200 bg-white px-3 py-2 text-xs font-semibold text-neutral-700 transition hover:bg-neutral-100">자동 생성</button>}
+                            </div>
+                            <textarea value={form.html} onChange={(e) => handleChange('html', e.target.value)} disabled={!isEditing} rows={18} className={textareaClass(isEditing)} placeholder="<div>상세페이지 HTML</div>" />
+                          </div>
+                        </div>
 
-            <Panel title="추가 키워드">
-              <input
-                value={extra}
-                onChange={(e) => setExtra(e.target.value)}
-                placeholder="예: minimal, luxury, korean e-commerce"
-                style={inputStyle}
-              />
-            </Panel>
-          </div>
-        </>
-      )}
-
-      {/* 결과 */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 0.98fr", gap: 14, marginTop: 16 }}>
-        {/* Prompt */}
-        <div style={{ border: "1px solid #ddd", borderRadius: 18, padding: 14, background: "#fff" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-            <strong>✅ Prompt</strong>
-            <button
-              onClick={() => copy(prompt)}
-              style={{
-                marginLeft: "auto",
-                padding: "8px 12px",
-                borderRadius: 12,
-                border: "1px solid #ddd",
-                background: "#fff",
-                cursor: "pointer",
-                fontWeight: 900,
-              }}
-            >
-              복사
-            </button>
-          </div>
-          <textarea
-            readOnly
-            value={prompt}
-            style={{
-              width: "100%",
-              minHeight: 170,
-              padding: 12,
-              borderRadius: 12,
-              border: "1px solid #ddd",
-              fontSize: 13,
-              boxSizing: "border-box",
-            }}
-          />
-        </div>
-
-        {/* 우측: Prompt 설명 + 번역표 */}
-        <div style={{ border: "1px solid #eee", borderRadius: 18, padding: 14, background: "#fafafa", fontSize: 13, lineHeight: 1.65 }}>
-          <strong>📌 Prompt 설명 (자동)</strong>
-
-          <div style={{ marginTop: 10, fontWeight: 900 }}>현재 선택</div>
-          <div style={{ marginTop: 6 }}>
-            • 카테고리: <b>{GROUP_LABEL[group]}</b>
-            <br />
-            • 아이템: <b>{itemLabel}</b>
-            <br />
-            • 샷: <b>{SHOT_LABEL[shot]}</b>
-            <br />
-            • 배경: <b>{bgText}</b>
-          </div>
-
-          <div style={{ marginTop: 12, fontWeight: 900 }}>설명</div>
-          <ul style={{ paddingLeft: 18, marginTop: 8 }}>
-            {promptGuideKorean.map((t, i) => (
-              <li key={i}>{t}</li>
-            ))}
-          </ul>
-
-          <div style={{ marginTop: 12, fontWeight: 900 }}>영문 Prompt 해석(콤마 단위)</div>
-          <div style={{ marginTop: 10 }}>
-            <Table rows={translationRows} />
-          </div>
-        </div>
-
-        {/* Negative Prompt */}
-        <div style={{ border: "1px solid #ddd", borderRadius: 18, padding: 14, background: "#fff" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-            <strong>⛔ Negative Prompt ({compact ? "핵심" : "상세"} 자동)</strong>
-            <button
-              onClick={() => copy(negativePrompt)}
-              style={{
-                marginLeft: "auto",
-                padding: "8px 12px",
-                borderRadius: 12,
-                border: "1px solid #ddd",
-                background: "#fff",
-                cursor: "pointer",
-                fontWeight: 900,
-              }}
-            >
-              복사
-            </button>
-          </div>
-          <textarea
-            readOnly
-            value={negativePrompt}
-            style={{
-              width: "100%",
-              minHeight: 150,
-              padding: 12,
-              borderRadius: 12,
-              border: "1px solid #ddd",
-              fontSize: 13,
-              boxSizing: "border-box",
-            }}
-          />
-        </div>
-
-        {/* Negative 설명 */}
-        <div style={{ border: "1px solid #eee", borderRadius: 18, padding: 14, background: "#fafafa", fontSize: 13, lineHeight: 1.65 }}>
-          <strong>📌 Negative Prompt 설명(자동)</strong>
-          <ul style={{ paddingLeft: 18, marginTop: 10 }}>
-            {negativeGuideKorean.map((t, i) => (
-              <li key={i}>{t}</li>
-            ))}
-          </ul>
+                        {/* 프리뷰 */}
+                        <div className="space-y-4">
+                          <div className="rounded-[22px] border border-neutral-200 bg-neutral-50 p-4">
+                            <div className="mb-3 text-base font-semibold text-neutral-900">대표이미지</div>
+                            <div className="overflow-hidden rounded-[20px] border border-neutral-200 bg-white">
+                              {form.main_image ? <img src={form.main_image} alt="대표이미지" className="h-[360px] w-full object-cover" /> : <div className="flex h-[360px] items-center justify-center text-sm text-neutral-400">대표이미지 없음</div>}
+                            </div>
+                          </div>
+                          <div className="rounded-[22px] border border-neutral-200 bg-neutral-50 p-4">
+                            <div className="mb-3 text-base font-semibold text-neutral-900">추가이미지 미리보기</div>
+                            {previewSubImages.length > 0 ? (
+                              <div className="grid grid-cols-3 gap-3">
+                                {previewSubImages.map((img, idx) => (
+                                  <div key={`${img}-${idx}`} className="overflow-hidden rounded-2xl border border-neutral-200 bg-white">
+                                    <img src={img} alt={`sub-${idx + 1}`} className="aspect-square w-full object-cover" />
+                                  </div>
+                                ))}
+                              </div>
+                            ) : <div className="rounded-2xl border border-dashed border-neutral-300 bg-white px-4 py-10 text-center text-sm text-neutral-400">추가이미지 없음</div>}
+                          </div>
+                          <div className="rounded-[22px] border border-neutral-200 bg-neutral-50 p-4">
+                            <div className="mb-3 text-base font-semibold text-neutral-900">상세페이지 라이브 프리뷰</div>
+                            <div className="max-h-[700px] overflow-auto rounded-[20px] border border-neutral-200 bg-white">
+                              {form.html.trim() ? <div className="p-4" dangerouslySetInnerHTML={{ __html: form.html }} /> : <div className="px-4 py-10 text-center text-sm text-neutral-400">HTML 내용이 없습니다.</div>}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </section>
+            </>
+          )}
         </div>
       </div>
-    </main>
-  );
+    </div>
+  )
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <div className="mb-2 text-sm font-semibold text-neutral-700">{label}</div>
+      {children}
+    </label>
+  )
+}
+
+function inputClass(enabled: boolean) {
+  return `w-full rounded-2xl border px-4 py-3 text-sm outline-none transition ${enabled ? 'border-neutral-200 bg-white focus:border-neutral-400' : 'border-neutral-200 bg-white text-neutral-900'}`
+}
+
+function textareaClass(enabled: boolean) {
+  return `w-full rounded-2xl border px-4 py-3 text-sm outline-none transition ${enabled ? 'border-neutral-200 bg-white focus:border-neutral-400' : 'border-neutral-200 bg-white text-neutral-900'}`
 }
